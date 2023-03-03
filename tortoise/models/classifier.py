@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from tortoise.models.arch_util import Upsample, Downsample, normalization, zero_module, AttentionBlock
 
+import tortoise.utils.torch_intermediary as ml
 
 class ResBlock(nn.Module):
     def __init__(
@@ -124,7 +125,8 @@ class AudioMiniEncoderWithClassifierHead(nn.Module):
     def __init__(self, classes, distribute_zero_label=True, **kwargs):
         super().__init__()
         self.enc = AudioMiniEncoder(**kwargs)
-        self.head = nn.Linear(self.enc.dim, classes)
+        # nn.Linear
+        self.head = ml.Linear(self.enc.dim, classes)
         self.num_classes = classes
         self.distribute_zero_label = distribute_zero_label
 

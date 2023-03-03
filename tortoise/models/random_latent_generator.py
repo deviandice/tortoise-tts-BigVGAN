@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import tortoise.utils.torch_intermediary as ml
 
 def fused_leaky_relu(input, bias=None, negative_slope=0.2, scale=2 ** 0.5):
     if bias is not None:
@@ -41,7 +42,8 @@ class RandomLatentConverter(nn.Module):
     def __init__(self, channels):
         super().__init__()
         self.layers = nn.Sequential(*[EqualLinear(channels, channels, lr_mul=.1) for _ in range(5)],
-                                    nn.Linear(channels, channels))
+                                    # nn.Linear
+                                    ml.Linear(channels, channels))
         self.channels = channels
 
     def forward(self, ref):

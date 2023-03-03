@@ -7,6 +7,7 @@ from tortoise.models.arch_util import CheckpointedXTransformerEncoder
 from tortoise.models.transformer import Transformer
 from tortoise.models.xtransformers import Encoder
 
+import tortoise.utils.torch_intermediary as ml
 
 def exists(val):
     return val is not None
@@ -44,11 +45,15 @@ class CLVP(nn.Module):
             use_xformers=False,
     ):
         super().__init__()
-        self.text_emb = nn.Embedding(num_text_tokens, dim_text)
-        self.to_text_latent = nn.Linear(dim_text, dim_latent, bias=False)
+        # nn.Embedding
+        self.text_emb = ml.Embedding(num_text_tokens, dim_text)
+        # nn.Linear
+        self.to_text_latent = ml.Linear(dim_text, dim_latent, bias=False)
 
-        self.speech_emb = nn.Embedding(num_speech_tokens, dim_speech)
-        self.to_speech_latent = nn.Linear(dim_speech, dim_latent, bias=False)
+        # nn.Embedding
+        self.speech_emb = ml.Embedding(num_speech_tokens, dim_speech)
+        # nn.Linear
+        self.to_speech_latent = ml.Linear(dim_speech, dim_latent, bias=False)
 
         if use_xformers:
             self.text_transformer = CheckpointedXTransformerEncoder(
@@ -93,8 +98,10 @@ class CLVP(nn.Module):
         self.wav_token_compression = wav_token_compression
         self.xformers = use_xformers
         if not use_xformers:
-            self.text_pos_emb = nn.Embedding(text_seq_len, dim_text)
-            self.speech_pos_emb = nn.Embedding(num_speech_tokens, dim_speech)
+            # nn.Embedding
+            self.text_pos_emb = ml.Embedding(text_seq_len, dim_text)
+            # nn.Embedding
+            self.speech_pos_emb = ml.Embedding(num_speech_tokens, dim_speech)
 
     def forward(
             self,

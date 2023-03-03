@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch import nn, einsum
 
+import tortoise.utils.torch_intermediary as ml
+
 DEFAULT_DIM_HEAD = 64
 
 Intermediates = namedtuple('Intermediates', [
@@ -121,7 +123,8 @@ class AbsolutePositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len):
         super().__init__()
         self.scale = dim ** -0.5
-        self.emb = nn.Embedding(max_seq_len, dim)
+        # nn.Embedding
+        self.emb = ml.Embedding(max_seq_len, dim)
 
     def forward(self, x):
         n = torch.arange(x.shape[1], device=x.device)
@@ -150,7 +153,8 @@ class RelativePositionBias(nn.Module):
         self.causal = causal
         self.num_buckets = num_buckets
         self.max_distance = max_distance
-        self.relative_attention_bias = nn.Embedding(num_buckets, heads)
+        # nn.Embedding
+        self.relative_attention_bias = ml.Embedding(num_buckets, heads)
 
     @staticmethod
     def _relative_position_bucket(relative_position, causal=True, num_buckets=32, max_distance=128):
@@ -350,7 +354,8 @@ class RMSScaleShiftNorm(nn.Module):
         self.scale = dim ** -0.5
         self.eps = eps
         self.g = nn.Parameter(torch.ones(dim))
-        self.scale_shift_process = nn.Linear(dim * 2, dim * 2)
+        # nn.Linear
+        self.scale_shift_process = ml.Linear(dim * 2, dim * 2)
 
     def forward(self, x, norm_scale_shift_inp):
         norm = torch.norm(x, dim=-1, keepdim=True) * self.scale
@@ -430,7 +435,8 @@ class GLU(nn.Module):
     def __init__(self, dim_in, dim_out, activation):
         super().__init__()
         self.act = activation
-        self.proj = nn.Linear(dim_in, dim_out * 2)
+        # nn.Linear
+        self.proj = ml.Linear(dim_in, dim_out * 2)
 
     def forward(self, x):
         x, gate = self.proj(x).chunk(2, dim=-1)
@@ -455,7 +461,8 @@ class FeedForward(nn.Module):
         activation = ReluSquared() if relu_squared else nn.GELU()
 
         project_in = nn.Sequential(
-            nn.Linear(dim, inner_dim),
+            # nn.Linear
+            ml.Linear(dim, inner_dim),
             activation
         ) if not glu else GLU(dim, inner_dim, activation)
 
@@ -463,7 +470,8 @@ class FeedForward(nn.Module):
             project_in,
             nn.LayerNorm(inner_dim) if post_act_ln else nn.Identity(),
             nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim_out)
+            # nn.Linear
+            ml.Linear(inner_dim, dim_out)
         )
 
         # init last linear layer to 0
@@ -516,16 +524,20 @@ class Attention(nn.Module):
             qk_dim = int(collab_compression * qk_dim)
             self.collab_mixing = nn.Parameter(torch.randn(heads, qk_dim))
 
-        self.to_q = nn.Linear(dim, qk_dim, bias=False)
-        self.to_k = nn.Linear(dim, qk_dim, bias=False)
-        self.to_v = nn.Linear(dim, v_dim, bias=False)
+        # nn.Linear
+        self.to_q = ml.Linear(dim, qk_dim, bias=False)
+        # nn.Linear
+        self.to_k = ml.Linear(dim, qk_dim, bias=False)
+        # nn.Linear
+        self.to_v = ml.Linear(dim, v_dim, bias=False)
 
         self.dropout = nn.Dropout(dropout)
 
         # add GLU gating for aggregated values, from alphafold2
         self.to_v_gate = None
         if gate_values:
-            self.to_v_gate = nn.Linear(dim, v_dim)
+            # nn.Linear
+            self.to_v_gate = ml.Linear(dim, v_dim)
             nn.init.constant_(self.to_v_gate.weight, 0)
             nn.init.constant_(self.to_v_gate.bias, 1)
 
@@ -561,7 +573,8 @@ class Attention(nn.Module):
 
         # attention on attention
         self.attn_on_attn = on_attn
-        self.to_out = nn.Sequential(nn.Linear(v_dim, dim * 2), nn.GLU()) if on_attn else nn.Linear(v_dim, dim)
+        # nn.Linear
+        self.to_out = nn.Sequential(ml.Linear(v_dim, dim * 2), nn.GLU()) if on_attn else ml.Linear(v_dim, dim)
 
         self.rel_pos_bias = rel_pos_bias
         if rel_pos_bias:
@@ -1051,7 +1064,8 @@ class ViTransformerWrapper(nn.Module):
         self.patch_size = patch_size
 
         self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
-        self.patch_to_embedding = nn.Linear(patch_dim, dim)
+        # nn.Linear
+        self.patch_to_embedding = ml.Linear(patch_dim, dim)
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(emb_dropout)
 
@@ -1109,18 +1123,21 @@ class TransformerWrapper(nn.Module):
         self.max_mem_len = max_mem_len
         self.shift_mem_down = shift_mem_down
 
-        self.token_emb = nn.Embedding(num_tokens, emb_dim)
+        # nn.Embedding
+        self.token_emb = ml.Embedding(num_tokens, emb_dim)
         self.pos_emb = AbsolutePositionalEmbedding(emb_dim, max_seq_len) if (
                     use_pos_emb and not attn_layers.has_pos_emb) else always(0)
         self.emb_dropout = nn.Dropout(emb_dropout)
 
-        self.project_emb = nn.Linear(emb_dim, dim) if emb_dim != dim else nn.Identity()
+        # nn.Linear
+        self.project_emb = ml.Linear(emb_dim, dim) if emb_dim != dim else nn.Identity()
         self.attn_layers = attn_layers
         self.norm = nn.LayerNorm(dim)
 
         self.init_()
 
-        self.to_logits = nn.Linear(dim, num_tokens) if not tie_embedding else lambda t: t @ self.token_emb.weight.t()
+        # nn.Linear
+        self.to_logits = ml.Linear(dim, num_tokens) if not tie_embedding else lambda t: t @ self.token_emb.weight.t()
 
         # memory tokens (like [cls]) from Memory Transformers paper
         num_memory_tokens = default(num_memory_tokens, 0)
@@ -1207,12 +1224,14 @@ class ContinuousTransformerWrapper(nn.Module):
                     use_pos_emb and not attn_layers.has_pos_emb) else always(0)
         self.emb_dropout = nn.Dropout(emb_dropout)
 
-        self.project_in = nn.Linear(dim_in, dim) if exists(dim_in) else nn.Identity()
+        # nn.Linear
+        self.project_in = ml.Linear(dim_in, dim) if exists(dim_in) else nn.Identity()
 
         self.attn_layers = attn_layers
         self.norm = nn.LayerNorm(dim)
 
-        self.project_out = nn.Linear(dim, dim_out) if exists(dim_out) else nn.Identity()
+        # nn.Linear
+        self.project_out = ml.Linear(dim, dim_out) if exists(dim_out) else nn.Identity()
 
     def forward(
             self,

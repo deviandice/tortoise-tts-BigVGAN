@@ -9,6 +9,9 @@ from transformers.utils.model_parallel_utils import get_device_map, assert_devic
 from tortoise.models.arch_util import AttentionBlock
 from tortoise.utils.typical_sampling import TypicalLogitsWarper
 
+from tortoise.utils.device import get_device_count
+
+import tortoise.utils.torch_intermediary as ml
 
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
@@ -33,12 +36,14 @@ class ResBlock(nn.Module):
 
 
 class GPT2InferenceModel(GPT2PreTrainedModel):
-    def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear):
+    def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear, kv_cache):
         super().__init__(config)
         self.transformer = gpt
         self.text_pos_embedding = text_pos_emb
         self.embeddings = embeddings
         self.lm_head = nn.Sequential(norm, linear)
+
+        self.kv_cache = kv_cache
 
         # Model parallel
         self.model_parallel = False
@@ -47,7 +52,7 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
 
     def parallelize(self, device_map=None):
         self.device_map = (
-            get_device_map(len(self.transformer.h), range(torch.cuda.device_count()))
+            get_device_map(len(self.transformer.h), range(get_device_count()))
             if device_map is None
             else device_map
         )
@@ -75,6 +80,7 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
     def prepare_inputs_for_generation(self, input_ids, past=None, **kwargs):
 
         token_type_ids = kwargs.get("token_type_ids", None)
+        if not self.kv_cache: past = None
         # only last token for inputs_ids if past is defined in kwargs
         if past:
             input_ids = input_ids[:, -1].unsqueeze(-1)
@@ -216,7 +222,8 @@ class ConditioningEncoder(nn.Module):
 class LearnedPositionEmbeddings(nn.Module):
     def __init__(self, seq_len, model_dim, init=.02):
         super().__init__()
-        self.emb = nn.Embedding(seq_len, model_dim)
+        # ml.Embedding
+        self.emb = ml.Embedding(seq_len, model_dim)
         # Initializing this way is standard for GPT-2
         self.emb.weight.data.normal_(mean=0.0, std=init)
 
@@ -225,7 +232,7 @@ class LearnedPositionEmbeddings(nn.Module):
         return self.emb(torch.arange(0, sl, device=x.device))
 
     def get_fixed_embedding(self, ind, dev):
-        return self.emb(torch.tensor([ind], device=dev)).unsqueeze(0)
+        return self.emb(torch.arange(0, ind, device=dev))[ind-1:ind]
 
 
 def build_hf_gpt_transformer(layers, model_dim, heads, max_mel_seq_len, max_text_seq_len, checkpointing):
@@ -316,9 +323,11 @@ class UnifiedVoice(nn.Module):
         self.max_conditioning_inputs = max_conditioning_inputs
         self.mel_length_compression = mel_length_compression
         self.conditioning_encoder = ConditioningEncoder(80, model_dim, num_attn_heads=heads)
-        self.text_embedding = nn.Embedding(self.number_text_tokens*types+1, model_dim)
+        # ml.Embedding
+        self.text_embedding = ml.Embedding(self.number_text_tokens*types+1, model_dim)
         if use_mel_codes_as_input:
-            self.mel_embedding = nn.Embedding(self.number_mel_codes, model_dim)
+            # ml.Embedding
+            self.mel_embedding = ml.Embedding(self.number_mel_codes, model_dim)
         else:
             self.mel_embedding = MelEncoder(model_dim, resblocks_per_reduction=1)
         self.gpt, self.mel_pos_embedding, self.text_pos_embedding, self.mel_layer_pos_embedding, self.text_layer_pos_embedding = \
@@ -331,8 +340,10 @@ class UnifiedVoice(nn.Module):
             self.text_solo_embedding = 0
 
         self.final_norm = nn.LayerNorm(model_dim)
-        self.text_head = nn.Linear(model_dim, self.number_text_tokens*types+1)
-        self.mel_head = nn.Linear(model_dim, self.number_mel_codes)
+        # nn.Linear
+        self.text_head = ml.Linear(model_dim, self.number_text_tokens*types+1)
+        # nn.Linear
+        self.mel_head = ml.Linear(model_dim, self.number_mel_codes)
 
         # Initialize the embeddings per the GPT-2 scheme
         embeddings = [self.text_embedding]
@@ -340,6 +351,19 @@ class UnifiedVoice(nn.Module):
             embeddings.append(self.mel_embedding)
         for module in embeddings:
             module.weight.data.normal_(mean=0.0, std=.02)
+
+    def post_init_gpt2_config(self, kv_cache=False):
+        seq_length = self.max_mel_tokens + self.max_text_tokens + 2
+        gpt_config = GPT2Config(vocab_size=self.max_mel_tokens,
+                                n_positions=seq_length,
+                                n_ctx=seq_length,
+                                n_embd=self.model_dim,
+                                n_layer=self.layers,
+                                n_head=self.heads,
+                                gradient_checkpointing=False,
+                                use_cache=True)
+        self.inference_model = GPT2InferenceModel(gpt_config, self.gpt, self.mel_pos_embedding, self.mel_embedding, self.final_norm, self.mel_head, kv_cache=kv_cache)
+        self.gpt.wte = self.mel_embedding
 
     def build_aligned_inputs_and_targets(self, input, start_token, stop_token):
         inp = F.pad(input, (1,0), value=start_token)
@@ -461,17 +485,8 @@ class UnifiedVoice(nn.Module):
                          max_generate_length=None, typical_sampling=False, typical_mass=.9, **hf_generate_kwargs):
         seq_length = self.max_mel_tokens + self.max_text_tokens + 2
         if not hasattr(self, 'inference_model'):
-            # TODO: Decouple gpt_config from this inference model.
-            gpt_config = GPT2Config(vocab_size=self.max_mel_tokens,
-                                    n_positions=seq_length,
-                                    n_ctx=seq_length,
-                                    n_embd=self.model_dim,
-                                    n_layer=self.layers,
-                                    n_head=self.heads,
-                                    gradient_checkpointing=False,
-                                    use_cache=True)
-            self.inference_model = GPT2InferenceModel(gpt_config, self.gpt, self.mel_pos_embedding, self.mel_embedding, self.final_norm, self.mel_head)
-            self.gpt.wte = self.mel_embedding
+            self.post_init_gpt2_config(kv_cache=self.kv_cachepost_init_gpt2_config)
+            
 
         text_inputs = F.pad(text_inputs, (0, 1), value=self.stop_text_token)
         text_inputs, text_targets = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token, self.stop_text_token)

@@ -6,6 +6,7 @@ from einops import rearrange
 from rotary_embedding_torch import RotaryEmbedding, broadcat
 from torch import nn
 
+import tortoise.utils.torch_intermediary as ml
 
 # helpers
 
@@ -120,10 +121,12 @@ class FeedForward(nn.Module):
     def __init__(self, dim, dropout = 0., mult = 4.):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(dim, dim * mult * 2),
+            # nn.Linear
+            ml.Linear(dim, dim * mult * 2),
             GEGLU(),
             nn.Dropout(dropout),
-            nn.Linear(dim * mult, dim)
+            # nn.Linear
+            ml.Linear(dim * mult, dim)
         )
 
     def forward(self, x):
@@ -142,9 +145,11 @@ class Attention(nn.Module):
 
         self.causal = causal
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        # nn.Linear
+        self.to_qkv = ml.Linear(dim, inner_dim * 3, bias = False)
         self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
+            # nn.Linear
+            ml.Linear(inner_dim, dim),
             nn.Dropout(dropout)
         )
 

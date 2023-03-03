@@ -9,26 +9,18 @@ from scipy.io.wavfile import read
 
 from tortoise.utils.stft import STFT
 
+def get_voice_dir():
+    target = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../voices')
+    if not os.path.exists(target):
+        target = os.path.dirname('./voices/')
 
-BUILTIN_VOICES_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../voices')
+    os.makedirs(target, exist_ok=True)
 
-
-def load_wav_to_torch(full_path):
-    sampling_rate, data = read(full_path)
-    if data.dtype == np.int32:
-        norm_fix = 2 ** 31
-    elif data.dtype == np.int16:
-        norm_fix = 2 ** 15
-    elif data.dtype == np.float16 or data.dtype == np.float32:
-        norm_fix = 1.
-    else:
-        raise NotImplemented(f"Provided data dtype not supported: {data.dtype}")
-    return (torch.FloatTensor(data.astype(np.float32)) / norm_fix, sampling_rate)
-
+    return target
 
 def load_audio(audiopath, sampling_rate):
     if audiopath[-4:] == '.wav':
-        audio, lsr = load_wav_to_torch(audiopath)
+        audio, lsr = torchaudio.load(audiopath)
     elif audiopath[-4:] == '.mp3':
         audio, lsr = librosa.load(audiopath, sr=sampling_rate)
         audio = torch.FloatTensor(audio)
@@ -85,32 +77,54 @@ def dynamic_range_decompression(x, C=1):
     return torch.exp(x) / C
 
 
-def get_voices(extra_voice_dirs=[]):
-    dirs = [BUILTIN_VOICES_DIR] + extra_voice_dirs
+def get_voices(extra_voice_dirs=[], load_latents=True):
+    dirs = [get_voice_dir()] + extra_voice_dirs
     voices = {}
     for d in dirs:
         subs = os.listdir(d)
         for sub in subs:
             subj = os.path.join(d, sub)
             if os.path.isdir(subj):
-                voices[sub] = list(glob(f'{subj}/*.wav')) + list(glob(f'{subj}/*.mp3')) + list(glob(f'{subj}/*.pth'))
+                voices[sub] = list(glob(f'{subj}/*.wav')) + list(glob(f'{subj}/*.mp3'))
+                if load_latents:
+                    voices[sub] = voices[sub] + list(glob(f'{subj}/*.pth'))
     return voices
 
 
-def load_voice(voice, extra_voice_dirs=[]):
+def load_voice(voice, extra_voice_dirs=[], load_latents=True, sample_rate=22050, device='cpu', model_hash=None):
     if voice == 'random':
         return None, None
 
-    voices = get_voices(extra_voice_dirs)
+    voices = get_voices(extra_voice_dirs=extra_voice_dirs, load_latents=load_latents)
+
     paths = voices[voice]
-    if len(paths) == 1 and paths[0].endswith('.pth'):
-        return None, torch.load(paths[0])
-    else:
-        conds = []
-        for cond_path in paths:
-            c = load_audio(cond_path, 22050)
-            conds.append(c)
-        return conds, None
+    mtime = 0
+    
+    latent = None
+    voices = []
+
+    for path in paths:
+        filename = os.path.basename(path)
+        if filename[-4:] == ".pth" and filename[:12] == "cond_latents":
+            if not model_hash and filename == "cond_latents.pth":
+                latent = path
+            elif model_hash and filename == f"cond_latents_{model_hash[:8]}.pth":
+                latent = path
+        else:
+            voices.append(path)
+            mtime = max(mtime, os.path.getmtime(path))
+
+    if load_latents and latent is not None:
+        if os.path.getmtime(latent) > mtime:
+            print(f"Reading from latent: {latent}")
+            return None, torch.load(latent, map_location=device)
+        print(f"Latent file out of date: {latent}")
+    
+    samples = []
+    for path in voices:
+        c = load_audio(path, sample_rate)
+        samples.append(c)
+    return samples, None
 
 
 def load_voices(voices, extra_voice_dirs=[]):
@@ -180,8 +194,8 @@ class TacotronSTFT(torch.nn.Module):
         return mel_output
 
 
-def wav_to_univnet_mel(wav, do_normalization=False, device='cuda'):
-    stft = TacotronSTFT(1024, 256, 1024, 100, 24000, 0, 12000)
+def wav_to_univnet_mel(wav, do_normalization=False, device='cpu', sample_rate=24000):
+    stft = TacotronSTFT(1024, 256, 1024, 100, sample_rate, 0, 12000)
     stft = stft.to(device)
     mel = stft.mel_spectrogram(wav)
     if do_normalization:

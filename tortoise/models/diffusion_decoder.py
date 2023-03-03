@@ -8,7 +8,9 @@ import torch.nn.functional as F
 from torch import autocast
 
 from tortoise.models.arch_util import normalization, AttentionBlock
+from tortoise.utils.device import get_device_name
 
+import tortoise.utils.torch_intermediary as ml
 
 def is_latent(t):
     return t.dtype == torch.float
@@ -87,7 +89,8 @@ class ResBlock(TimestepBlock):
 
         self.emb_layers = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(
+            # nn.Linear
+            ml.Linear(
                 emb_channels,
                 2 * self.out_channels if use_scale_shift_norm else self.out_channels,
             ),
@@ -160,16 +163,19 @@ class DiffusionTts(nn.Module):
 
         self.inp_block = nn.Conv1d(in_channels, model_channels, 3, 1, 1)
         self.time_embed = nn.Sequential(
-            nn.Linear(model_channels, model_channels),
+            # nn.Linear
+            ml.Linear(model_channels, model_channels),
             nn.SiLU(),
-            nn.Linear(model_channels, model_channels),
+            # nn.Linear
+            ml.Linear(model_channels, model_channels),
         )
 
         # Either code_converter or latent_converter is used, depending on what type of conditioning data is fed.
         # This model is meant to be able to be trained on both for efficiency purposes - it is far less computationally
         # complex to generate tokens, while generating latents will normally mean propagating through a deep autoregressive
         # transformer network.
-        self.code_embedding = nn.Embedding(in_tokens, model_channels)
+        # nn.Embedding
+        self.code_embedding = ml.Embedding(in_tokens, model_channels)
         self.code_converter = nn.Sequential(
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
@@ -302,7 +308,8 @@ class DiffusionTts(nn.Module):
                 unused_params.extend(list(lyr.parameters()))
             else:
                 # First and last blocks will have autocast disabled for improved precision.
-                with autocast(x.device.type, enabled=self.enable_fp16 and i != 0):
+                # x.device.type
+                with autocast(device_type='cuda', enabled=self.enable_fp16 and i != 0):
                     x = lyr(x, time_emb)
 
         x = x.float()

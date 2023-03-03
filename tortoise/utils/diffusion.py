@@ -15,6 +15,13 @@ import torch
 import torch as th
 from tqdm import tqdm
 
+def tqdm_override(arr, verbose=False, progress=None, desc=None):
+    if verbose and desc is not None:
+        print(desc)
+        
+    if progress is None:
+        return tqdm(arr, disable=not verbose)
+    return progress.tqdm(arr, desc=f'{progress.msg_prefix} {desc}' if hasattr(progress, 'msg_prefix') else desc, track_tqdm=True)
 
 def normal_kl(mean1, logvar1, mean2, logvar2):
     """
@@ -530,6 +537,14 @@ class GaussianDiffusion:
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
+    def sample_loop(self, *args, **kwargs):
+        s = self.sampler.lower()
+        if s == 'p':
+            return self.p_sample_loop(*args, **kwargs)
+        if s == 'ddim':
+            return self.ddim_sample_loop(*args, **kwargs)
+        else: raise RuntimeError("sampler not implemented")
+
     def p_sample_loop(
         self,
         model,
@@ -540,7 +555,9 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         device=None,
-        progress=False,
+        verbose=False,
+        progress=None,
+        desc=None
     ):
         """
         Generate samples from the model.
@@ -558,7 +575,7 @@ class GaussianDiffusion:
             pass to the model. This can be used for conditioning.
         :param device: if specified, the device to create the samples on.
                        If not specified, use a model parameter's device.
-        :param progress: if True, show a tqdm progress bar.
+        :param verbose: if True, show a tqdm progress bar.
         :return: a non-differentiable batch of samples.
         """
         final = None
@@ -571,7 +588,9 @@ class GaussianDiffusion:
             cond_fn=cond_fn,
             model_kwargs=model_kwargs,
             device=device,
+            verbose=verbose,
             progress=progress,
+            desc=desc
         ):
             final = sample
         return final["sample"]
@@ -586,7 +605,9 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         device=None,
-        progress=False,
+        verbose=False,
+        progress=None,
+        desc=None
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -605,7 +626,7 @@ class GaussianDiffusion:
             img = th.randn(*shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
 
-        for i in tqdm(indices, disable=not progress):
+        for i in tqdm_override(indices, verbose=verbose, desc=desc, progress=progress):
             t = th.tensor([i] * shape[0], device=device)
             with th.no_grad():
                 out = self.p_sample(
@@ -718,8 +739,10 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         device=None,
-        progress=False,
+        verbose=False,
         eta=0.0,
+        progress=None,
+        desc=None,
     ):
         """
         Generate samples from the model using DDIM.
@@ -736,8 +759,10 @@ class GaussianDiffusion:
             cond_fn=cond_fn,
             model_kwargs=model_kwargs,
             device=device,
-            progress=progress,
+            verbose=verbose,
             eta=eta,
+            progress=progress,
+            desc=desc
         ):
             final = sample
         return final["sample"]
@@ -752,8 +777,10 @@ class GaussianDiffusion:
         cond_fn=None,
         model_kwargs=None,
         device=None,
-        progress=False,
+        verbose=False,
         eta=0.0,
+        progress=None,
+        desc=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -770,11 +797,11 @@ class GaussianDiffusion:
             img = th.randn(*shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
 
-        if progress:
+        if verbose:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
 
-            indices = tqdm(indices, disable=not progress)
+            indices = tqdm_override(indices, verbose=verbose, desc=desc, progress=progress)
 
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)

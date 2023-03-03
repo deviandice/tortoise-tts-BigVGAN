@@ -6,6 +6,7 @@ from torch import einsum
 from tortoise.models.arch_util import AttentionBlock
 from tortoise.models.xtransformers import ContinuousTransformerWrapper, Encoder
 
+import tortoise.utils.torch_intermediary as ml
 
 def exists(val):
     return val is not None
@@ -54,7 +55,8 @@ class CollapsingTransformer(nn.Module):
 class ConvFormatEmbedding(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.emb = nn.Embedding(*args, **kwargs)
+        # nn.Embedding
+        self.emb = ml.Embedding(*args, **kwargs)
 
     def forward(self, x):
         y = self.emb(x)
@@ -83,7 +85,8 @@ class CVVP(nn.Module):
                                       nn.Conv1d(model_dim//2, model_dim, kernel_size=3, stride=2, padding=1))
         self.conditioning_transformer = CollapsingTransformer(
             model_dim, model_dim, transformer_heads, dropout, conditioning_enc_depth, cond_mask_percentage)
-        self.to_conditioning_latent = nn.Linear(
+        # nn.Linear
+        self.to_conditioning_latent = ml.Linear(
             latent_dim, latent_dim, bias=False)
 
         if mel_codes is None:
@@ -93,7 +96,8 @@ class CVVP(nn.Module):
             self.speech_emb = ConvFormatEmbedding(mel_codes, model_dim)
         self.speech_transformer = CollapsingTransformer(
             model_dim, latent_dim, transformer_heads, dropout, speech_enc_depth, speech_mask_percentage)
-        self.to_speech_latent = nn.Linear(
+        # nn.Linear
+        self.to_speech_latent = ml.Linear(
             latent_dim, latent_dim, bias=False)
 
     def get_grad_norm_parameter_groups(self):

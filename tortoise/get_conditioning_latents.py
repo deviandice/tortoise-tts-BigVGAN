@@ -25,6 +25,6 @@ if __name__ == '__main__':
         for cond_path in cond_paths:
             c = load_audio(cond_path, 22050)
             conds.append(c)
-        conditioning_latents = tts.get_conditioning_latents(conds)
+        conditioning_latents = tts.get_conditioning_latents(conds, verbose=True)
         torch.save(conditioning_latents, os.path.join(args.output_path, f'{voice}.pth'))
 
